@@ -1,213 +1,59 @@
-import gradio as gr
-import pandas as pd
-import requests
-from PIL import Image
-from io import BytesIO
-from supabase import create_client, Client
-
-# --- 1. CONFIGURATION & CREDENTIALS ---
-SUPABASE_URL = "https://rtsyrpnvmakgbvgsrghh.supabase.co"
-SUPABASE_KEY = "sb_publishable_7mnBVC0Ebqhh8dxraUMGmQ_-w7NoxW5"
-
-# GitHub Raw URLs
-LOGO_URL = "https://github.com/vedikahansaria/Mishtee/blob/main/mishTee_logo.png?raw=true"
-STYLE_URL = "https://github.com/vedikahansaria/Mishtee/blob/main/styles.css?raw=true" # Assumed path
-
-# Initialize Supabase Client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# --- 2. ASSET MANAGEMENT ---
-def load_brand_assets():
-    """Fetches Logo and CSS from GitHub with fallback for stability."""
-    logo = None
-    css = ""
-    
-    # Fetch Logo
-    try:
-        response = requests.get(LOGO_URL)
-        if response.status_code == 200:
-            logo = Image.open(BytesIO(response.content))
-    except Exception as e:
-        print(f"⚠️ Logo fetch warning: {e}")
-
-    # Fetch CSS (with Minimalist Fallback)
-    try:
-        style_resp = requests.get(STYLE_URL)
-        if style_resp.status_code == 200:
-            css = style_resp.text
-        else:
-            raise Exception("Using internal styles")
-    except:
-        # Sober Minimalist Theme Fallback
-        css = """
-            .gradio-container {font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #fafafa;}
-            h1, h2, h3 {font-weight: 300; letter-spacing: 1px; color: #333;}
-            .secondary-text {color: #777; font-size: 0.9em; font-style: italic;}
-            #login-btn {background-color: #333 !important; color: white !important; border-radius: 4px;}
-            thead {background-color: #f0f0f0 !important; font-weight: bold;}
-            .center-content {display: flex; justify-content: center; align-items: center; flex-direction: column;}
-        """
-    return logo, css
-
-brand_logo, brand_css = load_brand_assets()
-
-# --- 3. BACKEND LOGIC FUNCTIONS ---
-
-def get_trending_products():
-    """Calculates top 4 best-selling products by quantity."""
-    try:
-        # 1. Fetch orders to aggregate quantity
-        orders_response = supabase.table("orders").select("product_id, qty_kg").execute()
-        orders_df = pd.DataFrame(orders_response.data)
-        
-        if orders_df.empty:
-            return pd.DataFrame()
-
-        # 2. Aggregate
-        trending = orders_df.groupby("product_id")["qty_kg"].sum().reset_index()
-        trending = trending.sort_values(by="qty_kg", ascending=False).head(4)
-        
-        # 3. Fetch Product Details
-        top_ids = trending["product_id"].tolist()
-        products_response = supabase.table("products")\
-            .select("item_id, sweet_name, variant_type, price_per_kg")\
-            .in_("item_id", top_ids)\
-            .execute()
-            
-        products_df = pd.DataFrame(products_response.data)
-        
-        # 4. Merge & Format
-        final_df = pd.merge(trending, products_df, left_on="product_id", right_on="item_id", how="left")
-        final_df = final_df.rename(columns={
-            "sweet_name": "Sweet Name",
-            "variant_type": "Variant",
-            "qty_kg": "Total Sold (Kg)",
-            "price_per_kg": "Price/Kg (₹)"
-        })
-        
-        return final_df[["Sweet Name", "Variant", "Total Sold (Kg)", "Price/Kg (₹)"]]
-
-    except Exception as e:
-        print(f"Error fetching trending: {e}")
-        return pd.DataFrame(columns=["Error fetching data"])
+# --- REPLACEMENT FUNCTION FOR SECTION 3 ---
 
 def process_login(phone_number):
     """
-    Orchestrator function:
-    1. Validates phone number.
-    2. Fetches Customer Name.
-    3. Fetches Order History.
-    4. Fetches Trending Data.
+    Orchestrator: Validates user -> Gets Name -> Gets History -> Gets Trending.
     """
-    # Initialize empty returns
-    empty_history = pd.DataFrame(columns=["Date", "Order ID", "Qty (Kg)", "Amount (₹)", "Status"])
-    empty_trending = pd.DataFrame(columns=["Sweet Name", "Variant", "Total Sold (Kg)", "Price/Kg (₹)"])
+    # 1. Define Empty DataFrames (Safety Fallbacks)
+    empty_hist = pd.DataFrame(columns=["Date", "Order ID", "Qty (Kg)", "Amount (₹)", "Status"])
+    empty_trend = pd.DataFrame(columns=["Sweet Name", "Variant", "Total Sold (Kg)", "Price/Kg (₹)"])
     
+    # 2. Input Validation
     if not phone_number:
-        return "⚠️ Please enter a valid phone number.", empty_history, empty_trending
+        return "⚠️ Please enter a phone number.", empty_hist, empty_trend
 
     try:
-        # A. Get Customer Details
-        cust_response = supabase.table("customers").select("full_name").eq("phone", phone_number).execute()
-        
-        if not cust_response.data:
-            greeting = "Namaste! We couldn't find an account with that number. Please sign up!"
-            return greeting, empty_history, get_trending_products() # Show trending even if not found
-        
-        customer_name = cust_response.data[0]['full_name']
-        greeting = f"### Namaste, {customer_name} ji! Great to see you again."
+        # 3. Get Trending Data (Always fetch this)
+        trending_data = get_trending_products()
+        if trending_data.empty:
+            trending_data = empty_trend
 
-        # B. Get Order History
-        orders_response = supabase.table("orders")\
+        # 4. Get Customer Details
+        cust_resp = supabase.table("customers").select("full_name").eq("phone", phone_number).execute()
+        
+        # Check if customer exists
+        if not cust_resp.data:
+            return "Namaste! Account not found. Please sign up!", empty_hist, trending_data
+        
+        # If customer exists, get name
+        name = cust_resp.data[0]['full_name']
+        greeting = f"## Namaste, {name} ji! Great to see you again."
+
+        # 5. Get Order History
+        orders_resp = supabase.table("orders")\
             .select("order_date, order_id, status, order_value_inr, qty_kg")\
             .eq("cust_phone", phone_number)\
             .order("order_date", desc=True)\
             .execute()
             
-        if orders_response.data:
-            history_df = pd.DataFrame(orders_response.data)
-            history_df = history_df.rename(columns={
+        if orders_resp.data:
+            hist_df = pd.DataFrame(orders_resp.data)
+            # Rename columns to look nice
+            hist_df = hist_df.rename(columns={
                 "order_date": "Date",
                 "order_id": "Order ID",
                 "status": "Status",
                 "order_value_inr": "Amount (₹)",
                 "qty_kg": "Qty (Kg)"
             })
-            history_df = history_df[["Date", "Order ID", "Qty (Kg)", "Amount (₹)", "Status"]]
+            # Select specific columns
+            hist_df = hist_df[["Date", "Order ID", "Qty (Kg)", "Amount (₹)", "Status"]]
         else:
-            history_df = empty_history
+            hist_df = empty_hist
 
-        # C. Get Trending Data
-        trending_df = get_trending_products()
-        if trending_df.empty:
-            trending_df = empty_trending
-
-        return greeting, history_df, trending_df
+        return greeting, hist_df, trending_data
 
     except Exception as e:
-        return f"⚠️ System Error: {str(e)}", empty_history, empty_trending
-
-# --- 4. UI CONSTRUCTION ---
-with gr.Blocks(css=brand_css, title="MishTee Magic") as app:
-    
-    # --- HEADER ---
-    with gr.Row(elem_classes=["center-content"]):
-        with gr.Column(scale=1, min_width=100):
-            if brand_logo:
-                gr.Image(value=brand_logo, show_label=False, show_download_button=False, container=False, height=100)
-            else:
-                gr.Markdown("# MishTee Magic")
-        
-    with gr.Row(elem_classes=["center-content"]):
-         gr.Markdown("### [ Purity and Health ]", elem_classes=["secondary-text"])
-
-    gr.Markdown("---")
-
-    # --- LOGIN SECTION ---
-    with gr.Row():
-        with gr.Column(scale=1):
-            phone_input = gr.Textbox(
-                label="Login", 
-                placeholder="Enter your registered Phone Number...", 
-                lines=1
-            )
-        with gr.Column(scale=1):
-            # Spacer
-            gr.Markdown("")
-        with gr.Column(scale=1):
-            login_btn = gr.Button("View Dashboard", elem_id="login-btn")
-
-    # --- GREETING AREA ---
-    greeting_output = gr.Markdown("")
-
-    # --- DATA TABS ---
-    with gr.Tabs():
-        with gr.TabItem("My Order History"):
-            history_output = gr.Dataframe(
-                label="Your Past Orders",
-                interactive=False,
-                wrap=True
-            )
-        
-        with gr.TabItem("Trending Today"):
-            trending_output = gr.Dataframe(
-                label="Top Selling Sweets",
-                interactive=False
-            )
-
-    # --- EVENT LISTENERS ---
-    # Trigger logic on click or enter
-    login_btn.click(
-        fn=process_login,
-        inputs=[phone_input],
-        outputs=[greeting_output, history_output, trending_output]
-    )
-    phone_input.submit(
-        fn=process_login,
-        inputs=[phone_input],
-        outputs=[greeting_output, history_output, trending_output]
-    )
-
-# --- 5. LAUNCH ---
-if __name__ == "__main__":
-    app.launch()
+        # Error Handler
+        print(f"Login Error: {e}")
+        return f"⚠️ System Error: {str(e)}", empty_hist, empty_trend
